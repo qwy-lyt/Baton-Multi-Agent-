@@ -24,6 +24,10 @@ export interface FailoverOptions {
   maxAttempts?: number;
   /** Extra user-supplied patterns, already compiled by the CLI. */
   patterns?: RegExp[];
+  /** Lines from the task/brief that must never be treated as provider errors.
+   *  The next agent commonly echoes the brief it just read, and that brief can
+   *  contain the previous agent's limit line. */
+  ignore?: readonly string[];
 }
 
 export interface FailoverDeps {
@@ -118,6 +122,13 @@ export async function runFailover(opts: FailoverOptions, deps: FailoverDeps): Pr
     let stopping = false;
     const unsub = deps.watch(opts.slug, (line) => {
       if (hit || stopping) return;
+      const text = line.trim();
+      if (text && opts.ignore?.some((entry) => {
+        const ignored = entry.trim();
+        return ignored.length > 0 && (text === ignored || text.includes(ignored));
+      })) {
+        return;
+      }
       const reason = matchLimit(line, patterns);
       if (!reason) return;
       hit = reason;
@@ -155,7 +166,7 @@ export async function runFailover(opts: FailoverOptions, deps: FailoverDeps): Pr
 
         deps.log(`↷ handing '${opts.slug}' from ${agent} to ${next}`);
         try {
-          await deps.pass(opts.slug, agent, next, `Automatic failover: ${agent} hit ${hit}`);
+          await deps.pass(opts.slug, agent, next, `Automatic failover from ${agent} (provider limit).`);
         } catch (e) {
           const reason = `could not write a handoff to ${next}: ${errorMessage(e)}`;
           deps.log(`✗ ${reason}`);

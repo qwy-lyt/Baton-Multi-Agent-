@@ -18,6 +18,8 @@ import { claimTask } from './claim.js';
 import { agentInstalled } from '../agents/roster.js';
 import { block as blockTask, releaseClaim } from '../lifecycle.js';
 import { bus } from '../events.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface FailoverCmdOptions {
   agents?: string;
@@ -105,6 +107,14 @@ export async function failoverCmd(slug: string, opts: FailoverCmdOptions): Promi
   }
   const patterns = compilePatterns(opts.pattern ?? []);
 
+  // The next agent echoes the brief it reads; a brief can contain the previous
+  // agent's limit line. Never treat those known texts as a new provider error.
+  const ignoreLines: string[] = [];
+  const initialTask = await getTask(root, slug);
+  if (initialTask?.task) {
+    ignoreLines.push(...initialTask.task.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  }
+
   // Print the live agent output. `startAgent` publishes it on the bus; the
   // supervisor subscribes separately to the same events for limit detection.
   const stopPrinting = bus.onType('agent.output', (e) => {
@@ -130,6 +140,15 @@ export async function failoverCmd(slug: string, opts: FailoverCmdOptions): Promi
     async pass(target, from, to, note) {
       const result = await passTask(target, { from, to, note, commitPending: true }, root);
       if (!result) throw new Error(`could not write a handoff for '${target}'`);
+      const updated = await getTask(root, target);
+      if (updated?.worktreePath) {
+        try {
+          const brief = readFileSync(join(updated.worktreePath, 'HANDOFF.md'), 'utf8');
+          ignoreLines.push(...brief.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+        } catch {
+          // The brief is optional for the supervisor; passTask already succeeded.
+        }
+      }
     },
     reassign: (target, from, to) => reassignTask(root, target, from, to),
     block: (target, reason) => blockTaskBySlug(root, target, reason),
@@ -138,7 +157,7 @@ export async function failoverCmd(slug: string, opts: FailoverCmdOptions): Promi
   };
 
   try {
-    const result = await runFailover({ slug, agents, maxAttempts: opts.max, patterns }, deps);
+    const result = await runFailover({ slug, agents, maxAttempts: opts.max, patterns, ignore: ignoreLines }, deps);
     if (result.outcome !== 'finished') process.exitCode = 1;
   } finally {
     stopPrinting();

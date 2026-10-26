@@ -163,6 +163,23 @@ describe('runFailover', () => {
     expect(result.outcome).toBe('finished');
   });
 
+  it('ignores limit-looking lines copied from the handoff brief', async () => {
+    const briefLine = '> Note: previous agent hit Error: 429 Too Many Requests';
+    const { deps, calls } = harness({
+      claude: { lines: [[briefLine, 'out']], exit: FINISHED },
+    });
+
+    const result = await runFailover({
+      slug: 'add-auth',
+      agents: ['claude', 'codex'],
+      ignore: [briefLine],
+    }, deps);
+
+    expect(result.outcome).toBe('finished');
+    expect(calls.some((c) => c.startsWith('stop:'))).toBe(false);
+    expect(calls.some((c) => c.startsWith('pass:'))).toBe(false);
+  });
+
   it('blocks when the run cannot be observed', async () => {
     const { deps, calls } = harness({});
 
